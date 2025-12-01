@@ -1,0 +1,108 @@
+# app/main.py
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from typing import List
+from io import BytesIO
+
+import pandas as pd
+
+from core.payload_flow import process_row   # <- uses your CIF → CKYC → Deposit flow
+
+
+app = FastAPI(title="Account Generation Service")
+
+# If you’re calling this from a frontend (React, etc.), keep CORS:
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # tighten this in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "Account Generation API running"}
+
+
+@app.post("/generate-accounts")
+async def generate_accounts(file: UploadFile = File(...)):
+    """
+    1. User uploads an Excel file.
+    2. For each row:
+         - Calls process_row(row_dict)
+         - That internally does: CIF → CKYC → Deposit
+    3. Returns only CIF number + Account number per row.
+    """
+    filename = file.filename.lower()
+
+    if not filename.endswith((".xlsx", ".xls")):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload an Excel file (.xlsx or .xls).",
+        )
+
+    # ---- Read Excel into pandas DataFrame ----
+    try:
+        file_bytes = await file.read()
+        buffer = BytesIO(file_bytes)
+        df = pd.read_excel(buffer)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error reading Excel file: {e}",
+        )
+
+    if df.empty:
+        raise HTTPException(status_code=400, detail="Excel file is empty.")
+
+    results: List[dict] = []
+    errors: List[dict] = []
+
+    # ---- Loop over each row & run the full flow ----
+    for idx, row in df.iterrows():
+        # Convert row to normal dict, replace NaN with None
+        row_dict = {
+            key: (None if pd.isna(value) else value)
+            for key, value in row.to_dict().items()
+        }
+
+        try:
+            flow_result = await process_row(row_dict)
+            # process_row returns: {"cifNumber": ..., "accountNumber": ...}
+            results.append(
+                {
+                    "row_index": int(idx),
+                    "cifNumber": flow_result.get("cifNumber"),
+                    "accountNumber": flow_result.get("accountNumber"),
+                }
+            )
+        except Exception as e:
+            # collect error per Excel row so user can see which ones failed
+            errors.append(
+                {
+                    "row_index": int(idx),
+                    "error": str(e),
+                }
+            )
+
+    if not results:
+        # All rows failed
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "No accounts were created. All rows failed.",
+                "errors": errors,
+            },
+        )
+
+    # User only sees CIF & account number (plus optional error list)
+    return {
+        "success": True,
+        "total_processed": len(df),
+        "accounts_created": len(results),
+        "accounts": results,
+        "errors": errors,  # you can remove this key if you don’t want to expose errors
+    }
