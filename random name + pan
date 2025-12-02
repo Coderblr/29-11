@@ -1,0 +1,52 @@
+import random
+import string
+import csv
+from faker import Faker
+
+# Use Indian locale with English letters
+fake = Faker("en_IN")
+
+# ================================
+# CHANGE THIS VALUE AS YOU WANT
+# e.g. 100, 1000, 10000, 50000...
+TOTAL_RECORDS = 1000
+# ================================
+
+def generate_pan(first_name: str, last_name: str) -> str:
+    # Make sure initials are A–Z (in case of any weird chars)
+    fn_initial = first_name[0].upper()
+    ln_initial = last_name[0].upper()
+
+    if fn_initial not in string.ascii_uppercase:
+        fn_initial = random.choice(string.ascii_uppercase)
+    if ln_initial not in string.ascii_uppercase:
+        ln_initial = random.choice(string.ascii_uppercase)
+
+    # PAN format: AAAAA9999A
+    part1 = ''.join(random.choices(string.ascii_uppercase, k=3))   # 1st 3 letters
+    part2 = fn_initial                                              # 4th = first-name initial
+    part3 = ln_initial                                              # 5th = last-name initial
+    part4 = str(random.randint(1000, 9999))                         # 4 digits
+    part5 = random.choice(string.ascii_uppercase)                   # last letter
+
+    return part1 + part2 + part3 + part4 + part5
+
+
+rows = []
+
+for _ in range(TOTAL_RECORDS):
+    first_name = fake.first_name()
+    last_name = fake.last_name()
+    pan = generate_pan(first_name, last_name)
+    rows.append([first_name, last_name, pan])
+
+# Save to CSV
+output_file = "indian_names_pan.csv"
+
+with open(output_file, "w", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+    writer.writerow(["First Name", "Last Name", "PAN"])
+    writer.writerows(rows)
+
+print(f"Generated {TOTAL_RECORDS} records.")
+print(f"Saved to: {output_file}")
