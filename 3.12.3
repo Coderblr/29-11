@@ -1,0 +1,26 @@
+from fastapi import FastAPI, Depends
+from typing import Annotated
+
+app = FastAPI()
+
+@app.post("/create_cif_ckyc_deposit/")
+def create_full_pipeline(
+    form_data: PipelineData,
+    user: Annotated[User.DBUser, Depends(Security.get_current_active_user)]
+):
+    # 1) Create CIF from PAN + CIF API
+    cif_res = _create_pan_cif_core(form_data)
+    cif_number = cif_res["cif_number"]
+
+    # 2) Run CKYC API for the same CIF
+    _ = _create_ckyc_core(form_data, cif_number, user)
+
+    # 3) Create Deposit Account API for the same CIF
+    dep_res = _create_deposit_core(form_data, cif_number, user)
+    deposit_account_number = dep_res["account_number"]
+
+    # 4) Return only CIF & Deposit Account number (no other fields)
+    return {
+        "cif_number": cif_number,
+        "deposit_account_number": deposit_account_number
+    }
