@@ -1,0 +1,19 @@
+from pydantic import BaseModel
+
+class PipelineData(BaseModel):
+    # ---- fields used by PAN + CIF ----
+    no_cif: int
+    region: str
+    acc_type: str        # "PCIF" or "NPCIF"
+    
+    # ---- fields used by CKYC ----
+    category: str        # from CKYC_Data
+    # add any other CKYC fields if needed
+
+    # ---- fields used by Deposit ----
+    cif: str | None = None   # will be filled after CIF creation
+    p_code: str
+    seg_code: str
+    no_acc: int = 1          # if you always create 1 account per CIF
+
+    # plus any other common fields you need
