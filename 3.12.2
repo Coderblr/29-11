@@ -1,0 +1,131 @@
+from typing import Annotated
+from fastapi import Depends, HTTPException
+import json
+
+# ---------- PAN + CIF CORE ----------
+
+def _create_pan_cif_core(form_data: PipelineData) -> dict:
+    if form_data.no_cif <= 0 or form_data.no_cif > 10:
+        raise HTTPException(status_code=400, detail="No of CIFs must be greater than 0 and less than 10")
+
+    r_code = Configs.get_region(form_data.region)
+    if r_code == "AAA":
+        raise HTTPException(status_code=400, detail="Region Invalid")
+
+    print("Region CIF:", r_code)
+    RRN = "SBI" + r_code
+
+    # you are looping over no_cif, but pipeline really needs only ONE CIF
+    # if you really want many CIFs, turn this into a list; for now we use 1st
+    RRNO = Configs.generate_random_string_with_timestamp(RRN)
+
+    if form_data.acc_type == "PCIF":
+        dict_payload = PWC.generate_cif_entry(RRNO, r_code)
+        payload = json.dumps(dict_payload)
+        with open('files/PWC.txt', 'a') as pf:
+            pf.write(str({RRNO: payload}))
+        response_data = EIS_API.get_pers_cif(payload, RRNO)
+        with open('files/PWC.txt', 'a') as rf:
+            rf.write(str({RRNO: response_data}))
+
+    elif form_data.acc_type == "NPCIF":
+        dict_payload = PWNC.generate_ncif_entry(RRNO, r_code)
+        payload = json.dumps(dict_payload)
+        with open('files/NP_PWC.txt', 'a') as pf:
+            pf.write(str({RRNO: payload}))
+        print("Executed")
+        response_data = EIS_API.get_npers_cif(payload, RRNO)
+        with open('files/NP_PWC.txt', 'a') as rf:
+            rf.write(str({RRNO: response_data}))
+
+    else:
+        raise HTTPException(status_code=400, detail="Invalid Account Type")
+
+    # TODO: replace '<CIF_FIELD_IN_RESPONSE>' with the actual key in response_data
+    # from your screenshot it looks like CUSTOMER id might be the CIF
+    cif_number = response_data["<CIF_FIELD_IN_RESPONSE>"]
+
+    return {
+        "cif_number": cif_number,
+        "rrn": RRNO,
+        "raw_response": response_data,
+    }
+
+
+# ---------- CKYC CORE ----------
+
+def _create_ckyc_core(form_data: PipelineData, cif_number: str, user: "User.DBUser") -> dict:
+    r_code = Configs.get_region(form_data.region)
+    print("CKYC Region:", r_code)
+    RRN = "SBI" + r_code
+    print(RRN)
+
+    RRNO = Configs.generate_random_string_with_timestamp(RRN)
+    print("RRNO:", RRNO)
+
+    # These constants are in your CKYC API; keep them if required
+    # p_code  = "62512262"
+    # seg_code = "0706"
+    # CUSTOMER (cif_number) is used below
+
+    dict_payload = CKYC.generate_ckyc_entry(
+        r_code,
+        cif_number,          # CUSTOMER / CIF
+        form_data.category
+    )
+    payload = json.dumps(dict_payload)
+    with open('files/CKYC_Payload.txt', 'a') as pf:
+        pf.write(str({RRNO: payload}))
+
+    response_data = EIS_API.get_ckyc_eis(payload, RRNO)
+    with open('files/CKYC_Response.txt', 'a') as rf:
+        rf.write(str({RRNO: response_data}))
+
+    return {
+        "raw_response": response_data,
+        "rrn": RRNO,
+    }
+
+
+# ---------- DEPOSIT CORE ----------
+
+def _create_deposit_core(form_data: PipelineData, cif_number: str, user: "User.DBUser") -> dict:
+    print(form_data.cif)
+    print(form_data.p_code)
+    print(form_data.seg_code)
+    print(form_data.region)
+    print(form_data.no_acc)
+
+    r_code = Configs.get_region(form_data.region)
+    print("Deposits Region:", r_code)
+
+    RRN = "SBI" + r_code
+    cif_ = []
+    print(RRN)
+
+    # here also you have a loop over no_acc; for pipeline we'll just do 1 account
+    RRNO = Configs.generate_random_string_with_timestamp(RRN)
+    print("RRNO:", RRNO)
+
+    dict_payload = Deposit.deposit_account(
+        r_code,
+        cif_number,              # use CIF from previous step
+        form_data.p_code,
+        form_data.seg_code
+    )
+    payload = json.dumps(dict_payload)
+    with open('files/Deposit_payload.txt', 'a') as pf:
+        pf.write(str({RRNO: payload}))
+
+    response_data = EIS_API.get_deposit_eis(payload, RRNO)
+    with open('files/Deposit_Response.txt', 'a') as rf:
+        rf.write(str({RRNO: response_data}))
+
+    # TODO: replace '<DEPOSIT_ACC_FIELD>' with actual key of account number
+    deposit_acc_no = response_data["<DEPOSIT_ACC_FIELD>"]
+
+    return {
+        "account_number": deposit_acc_no,
+        "raw_response": response_data,
+        "rrn": RRNO,
+    }
