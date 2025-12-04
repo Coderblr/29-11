@@ -1,0 +1,422 @@
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse
+import pandas as pd
+import httpx
+from typing import Dict, Any, List
+import io
+from datetime import datetime
+import json
+
+# Import your payload templates
+from payload import cif_payload_template, ckyc_payload_template
+from deposit import account_payload_template
+
+app = FastAPI(title="Excel Data Processor with API Flow")
+
+# API client configuration
+class APIClient:
+    def __init__(self, base_urls: Dict[str, str]):
+        self.cif_creation_url = base_urls.get("cif_creation")
+        self.ckyc_url = base_urls.get("ckyc")
+        self.account_creation_url = base_urls.get("account_creation")
+        self.timeout = 30.0
+    
+    async def create_cif(self, customer_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Call CIF creation API"""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(
+                    self.cif_creation_url,
+                    json=customer_data,
+                    headers={"Content-Type": "application/json"}
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPError as e:
+                raise HTTPException(status_code=500, detail=f"CIF creation failed: {str(e)}")
+    
+    async def submit_ckyc(self, cif_number: str, customer_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Call CKYC API"""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(
+                    self.ckyc_url,
+                    json=customer_data,
+                    headers={"Content-Type": "application/json"}
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPError as e:
+                raise HTTPException(status_code=500, detail=f"CKYC submission failed: {str(e)}")
+    
+    async def create_account(self, cif_number: str, ckyc_ref: str, customer_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Call Account creation API"""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(
+                    self.account_creation_url,
+                    json=customer_data,
+                    headers={"Content-Type": "application/json"}
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPError as e:
+                raise HTTPException(status_code=500, detail=f"Account creation failed: {str(e)}")
+
+
+def merge_excel_with_payload(excel_row: Dict[str, Any], payload_template: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Recursively merge Excel row data into payload template.
+    Excel data will override matching fields in the payload template.
+    """
+    merged = payload_template.copy() if isinstance(payload_template, dict) else payload_template
+    
+    if isinstance(merged, dict):
+        for key, value in merged.items():
+            # Check if this key exists in Excel data
+            if key in excel_row and excel_row[key] is not None and not pd.isna(excel_row[key]):
+                # If the template value is a dict, recursively merge
+                if isinstance(value, dict):
+                    merged[key] = merge_excel_with_payload(excel_row, value)
+                else:
+                    # Override with Excel data
+                    merged[key] = excel_row[key]
+            elif isinstance(value, dict):
+                # Recursively process nested dictionaries
+                merged[key] = merge_excel_with_payload(excel_row, value)
+            elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                # Handle list of dictionaries
+                merged[key] = [merge_excel_with_payload(excel_row, item) for item in value]
+    
+    return merged
+
+
+def map_excel_to_payload(excel_row: Dict[str, Any], payload_template: Dict[str, Any], field_mapping: Dict[str, str] = None) -> Dict[str, Any]:
+    """
+    Map Excel columns to payload structure using field mapping.
+    If field_mapping is provided, it maps Excel column names to payload field paths.
+    
+    Example field_mapping:
+    {
+        "customer_name": "personalDetails.name",
+        "mobile": "contactDetails.mobile",
+        "email": "contactDetails.email"
+    }
+    """
+    import copy
+    payload = copy.deepcopy(payload_template)
+    
+    # If no field mapping provided, try direct matching
+    if not field_mapping:
+        return merge_excel_with_payload(excel_row, payload)
+    
+    # Apply field mapping
+    for excel_col, payload_path in field_mapping.items():
+        if excel_col in excel_row and excel_row[excel_col] is not None and not pd.isna(excel_row[excel_col]):
+            # Navigate to nested field using dot notation
+            keys = payload_path.split('.')
+            current = payload
+            
+            # Navigate to the parent of target field
+            for key in keys[:-1]:
+                if key not in current:
+                    current[key] = {}
+                current = current[key]
+            
+            # Set the value
+            current[keys[-1]] = excel_row[excel_col]
+    
+    return payload
+
+
+async def process_customer_record(
+    excel_row: Dict[str, Any],
+    api_client: APIClient,
+    row_index: int,
+    cif_field_mapping: Dict[str, str] = None,
+    account_field_mapping: Dict[str, str] = None,
+    ckyc_field_mapping: Dict[str, str] = None
+) -> Dict[str, Any]:
+    """
+    Process a single customer record through the complete API flow:
+    1. Merge Excel data with CIF payload template
+    2. CIF Creation API call
+    3. Merge Excel data with CKYC payload template and add CIF number
+    4. CKYC API call
+    5. Merge Excel data with Account payload template and add CIF number & CKYC ref
+    6. Account Creation API call
+    """
+    result = {
+        "row_index": row_index,
+        "excel_data": excel_row.copy(),
+        "status": "pending",
+        "cif_number": None,
+        "ckyc_reference": None,
+        "account_number": None,
+        "errors": [],
+        "payloads_used": {}
+    }
+    
+    try:
+        # Step 1: Prepare CIF payload by merging Excel data with payload template
+        cif_payload = map_excel_to_payload(excel_row, cif_payload_template, cif_field_mapping)
+        result["payloads_used"]["cif_payload"] = cif_payload
+        
+        # Call CIF Creation API
+        cif_response = await api_client.create_cif(cif_payload)
+        result["cif_number"] = cif_response.get("cif_number") or cif_response.get("cifNumber") or cif_response.get("CIFNumber")
+        result["cif_response"] = cif_response
+        
+        if not result["cif_number"]:
+            raise ValueError("CIF number not received from CIF creation API")
+        
+        # Step 2: Prepare CKYC payload
+        ckyc_payload = map_excel_to_payload(excel_row, ckyc_payload_template, ckyc_field_mapping)
+        # Add CIF number to CKYC payload
+        ckyc_payload["cif_number"] = result["cif_number"]
+        result["payloads_used"]["ckyc_payload"] = ckyc_payload
+        
+        # Call CKYC API
+        ckyc_response = await api_client.submit_ckyc(result["cif_number"], ckyc_payload)
+        result["ckyc_reference"] = (ckyc_response.get("ckyc_reference") or 
+                                   ckyc_response.get("reference_number") or 
+                                   ckyc_response.get("ckycReference"))
+        result["ckyc_response"] = ckyc_response
+        
+        if not result["ckyc_reference"]:
+            # Some APIs might not return CKYC reference, use CIF number as reference
+            result["ckyc_reference"] = result["cif_number"]
+        
+        # Step 3: Prepare Account payload
+        account_payload = map_excel_to_payload(excel_row, account_payload_template, account_field_mapping)
+        # Add CIF number and CKYC reference to account payload
+        account_payload["cif_number"] = result["cif_number"]
+        account_payload["ckyc_reference"] = result["ckyc_reference"]
+        result["payloads_used"]["account_payload"] = account_payload
+        
+        # Call Account Creation API
+        account_response = await api_client.create_account(
+            result["cif_number"],
+            result["ckyc_reference"],
+            account_payload
+        )
+        result["account_number"] = (account_response.get("account_number") or 
+                                   account_response.get("accountNumber") or
+                                   account_response.get("acc_no"))
+        result["account_response"] = account_response
+        
+        if not result["account_number"]:
+            raise ValueError("Account number not received from Account creation API")
+        
+        result["status"] = "success"
+        
+    except Exception as e:
+        result["status"] = "failed"
+        result["errors"].append(str(e))
+    
+    return result
+
+
+@app.post("/process-excel")
+async def process_excel_with_payloads(
+    file: UploadFile = File(...),
+    cif_creation_url: str = "http://localhost:8001/api/cif/create",
+    ckyc_url: str = "http://localhost:8002/api/ckyc/submit",
+    account_creation_url: str = "http://localhost:8003/api/account/create",
+    cif_field_mapping: str = None,  # JSON string of field mappings
+    account_field_mapping: str = None,
+    ckyc_field_mapping: str = None
+):
+    """
+    Process Excel file by:
+    1. Reading Excel data row by row
+    2. Merging each row with CIF payload template from payload.py
+    3. Calling CIF creation API
+    4. Merging with CKYC payload template
+    5. Calling CKYC API
+    6. Merging with Account payload template from deposit.py
+    7. Calling Account creation API
+    8. Returning all generated CIF numbers and Account numbers
+    """
+    
+    # Validate file type
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="File must be an Excel file (.xlsx or .xls)")
+    
+    try:
+        # Read Excel file
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents))
+        
+        # Parse field mappings if provided
+        cif_mapping = json.loads(cif_field_mapping) if cif_field_mapping else None
+        account_mapping = json.loads(account_field_mapping) if account_field_mapping else None
+        ckyc_mapping = json.loads(ckyc_field_mapping) if ckyc_field_mapping else None
+        
+        # Initialize API client
+        api_config = {
+            "cif_creation": cif_creation_url,
+            "ckyc": ckyc_url,
+            "account_creation": account_creation_url
+        }
+        api_client = APIClient(api_config)
+        
+        # Process each row
+        results = []
+        successful = 0
+        failed = 0
+        
+        for index, row in df.iterrows():
+            # Convert row to dictionary and handle NaN values
+            row_data = row.to_dict()
+            row_data = {k: (None if pd.isna(v) else v) for k, v in row_data.items()}
+            
+            # Process through API flow with payload merging
+            result = await process_customer_record(
+                row_data, 
+                api_client, 
+                index,
+                cif_mapping,
+                account_mapping,
+                ckyc_mapping
+            )
+            results.append(result)
+            
+            if result["status"] == "success":
+                successful += 1
+            else:
+                failed += 1
+        
+        # Prepare summary
+        summary = {
+            "total_records": len(results),
+            "successful": successful,
+            "failed": failed,
+            "processed_at": datetime.now().isoformat(),
+            "excel_file": file.filename
+        }
+        
+        # Extract summary of generated numbers
+        generated_numbers = [
+            {
+                "row_index": r["row_index"],
+                "cif_number": r["cif_number"],
+                "ckyc_reference": r["ckyc_reference"],
+                "account_number": r["account_number"],
+                "status": r["status"]
+            }
+            for r in results
+        ]
+        
+        return {
+            "status": "completed",
+            "summary": summary,
+            "generated_numbers": generated_numbers,
+            "detailed_results": results
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+
+
+@app.post("/process-excel-batch")
+async def process_excel_batch(
+    file: UploadFile = File(...),
+    batch_size: int = 10,
+    cif_creation_url: str = "http://localhost:8001/api/cif/create",
+    ckyc_url: str = "http://localhost:8002/api/ckyc/submit",
+    account_creation_url: str = "http://localhost:8003/api/account/create",
+    cif_field_mapping: str = None,
+    account_field_mapping: str = None,
+    ckyc_field_mapping: str = None
+):
+    """
+    Process Excel file in batches for better performance with large files.
+    Uses payload templates from payload.py and deposit.py
+    """
+    
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="File must be an Excel file")
+    
+    try:
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents))
+        
+        cif_mapping = json.loads(cif_field_mapping) if cif_field_mapping else None
+        account_mapping = json.loads(account_field_mapping) if account_field_mapping else None
+        ckyc_mapping = json.loads(ckyc_field_mapping) if ckyc_field_mapping else None
+        
+        api_config = {
+            "cif_creation": cif_creation_url,
+            "ckyc": ckyc_url,
+            "account_creation": account_creation_url
+        }
+        api_client = APIClient(api_config)
+        
+        results = []
+        successful = 0
+        failed = 0
+        
+        # Process in batches
+        for i in range(0, len(df), batch_size):
+            batch_df = df.iloc[i:i+batch_size]
+            
+            for index, row in batch_df.iterrows():
+                row_data = row.to_dict()
+                row_data = {k: (None if pd.isna(v) else v) for k, v in row_data.items()}
+                
+                result = await process_customer_record(
+                    row_data, 
+                    api_client, 
+                    index,
+                    cif_mapping,
+                    account_mapping,
+                    ckyc_mapping
+                )
+                results.append(result)
+                
+                if result["status"] == "success":
+                    successful += 1
+                else:
+                    failed += 1
+        
+        summary = {
+            "total_records": len(results),
+            "successful": successful,
+            "failed": failed,
+            "batch_size": batch_size,
+            "processed_at": datetime.now().isoformat()
+        }
+        
+        generated_numbers = [
+            {
+                "row_index": r["row_index"],
+                "cif_number": r["cif_number"],
+                "ckyc_reference": r["ckyc_reference"],
+                "account_number": r["account_number"],
+                "status": r["status"]
+            }
+            for r in results
+        ]
+        
+        return {
+            "status": "completed",
+            "summary": summary,
+            "generated_numbers": generated_numbers,
+            "detailed_results": results
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Batch processing failed: {str(e)}")
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+
+# To run: uvicorn main:app --reload
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
