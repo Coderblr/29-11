@@ -1,0 +1,118 @@
+import React, { useState } from 'react';
+import styles from '../styles/AppStyles'; // Assuming a similar path to your styles
+
+// Export the default functional component
+export default function FundTransfer() {
+    // 1. STATE MANAGEMENT
+    const [transferType, setTransferType] = useState(''); // Stores the selected transfer type
+    const [fromAccount, setFromAccount] = useState('');   // Stores the 'From Account' number
+    const [toAccount, setToAccount] = useState('');     // Stores the 'To Account' number
+    const [region, setRegion] = useState('');           // Stores the selected region
+    
+    // Add other necessary states (e.g., amount, response, error, loading)
+    // const [amount, setAmount] = useState('');
+    // const [loading, setLoading] = useState(false); 
+    // const [response, setResponse] = useState(null);
+    // const [error, setError] = useState(null);
+
+    // 2. HANDLER FUNCTION (Placeholder)
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        // In a real application, you would put your API call logic here.
+        // For example: 
+        // setLoading(true);
+        // await fetch('your_transfer_api_endpoint', { ... }); 
+        console.log('--- Submitting Transfer Data ---');
+        console.log('Type:', transferType);
+        console.log('From Account:', fromAccount);
+        console.log('To Account:', toAccount);
+        console.log('Region:', region);
+        // setLoading(false);
+    };
+
+    // 3. COMPONENT RENDER
+    return (
+        <div className={styles.page}>
+            <div className={styles.pageHeader}>
+                <h1 className={styles.pageTitle}>Fund Transfer</h1>
+                <p className={styles.pageSubtitle}>Select transfer type and enter account details</p>
+            </div>
+
+            <div className={styles.formCard}>
+                <form onSubmit={handleSubmit}>
+                    <div className={styles.formGrid}>
+                        
+                        {/* 4. TRANSFER TYPE DROPDOWN */}
+                        <div className={styles.formGroup}>
+                            <label className={styles.label}>Transfer Type</label>
+                            <select 
+                                value={transferType}
+                                onChange={(e) => setTransferType(e.target.value)}
+                                required
+                            >
+                                <option value="">Select Transfer Type</option>
+                                <option value="BGL_TO_BGL">BGL to BGL</option>
+                                <option value="CUST_TO_CUST">Customer to Customer</option>
+                                <option value="CUST_TO_BGL">Customer to BGL</option>
+                                <option value="BGL_TO_CUST">BGL to Customer</option>
+                            </select>
+                        </div>
+                        
+                        {/* 5. FROM ACCOUNT INPUT */}
+                        <div className={styles.formGroup}>
+                            <label className={styles.label}>From Account Number</label>
+                            <input
+                                type="text"
+                                value={fromAccount}
+                                onChange={(e) => setFromAccount(e.target.value)}
+                                className={styles.input}
+                                required
+                            />
+                        </div>
+
+                        {/* 6. TO ACCOUNT INPUT */}
+                        <div className={styles.formGroup}>
+                            <label className={styles.label}>To Account Number</label>
+                            <input
+                                type="text"
+                                value={toAccount}
+                                onChange={(e) => setToAccount(e.target.value)}
+                                className={styles.input}
+                                required
+                            />
+                        </div>
+
+                        {/* 7. REGION DROPDOWN (Copied from AmendView) */}
+                        <div className={styles.formGroup}>
+                            <label className={styles.label}>Region</label>
+                            <select 
+                                value={region} 
+                                onChange={(e) => setRegion(e.target.value)} 
+                                required
+                            >
+                                <option value="">Select Region</option>
+                                <option value="0">0 - UAT</option>
+                                <option value="X">X - UAT</option>
+                                {/* ... add all other region options ... */}
+                                <option value="Y">Y - UAT</option>
+                                <option value="Z">Z - UAT</option>
+                                <option value="K">K - Pre-Prod</option>
+                                <option value="J">J - Pre-Prod</option>
+                                <option value="R1">R1 - Pre-Prod</option>
+                                <option value="Y2">Y2 - Pre-Prod</option>
+                                <option value="L">L - Pre-Prod</option>
+                                <option value="C">C - Pre-Prod</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    {/* 8. SUBMIT BUTTON */}
+                    <button type="submit" className={styles.primaryButton}>
+                        Transfer Funds
+                    </button>
+                    
+                </form>
+            </div>
+        </div>
+    );
+}
